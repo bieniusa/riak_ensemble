@@ -111,9 +111,7 @@ loop(T, Timeout) ->
         {{lease, Duration}, From} ->
             case riak_ensemble_clock:monotonic_time_ms() of
                 {ok, Time} ->
-                    ets:insert(T, {lease, Time + Duration});
-                error ->
-                    ets:insert(T, {lease, undefined})
+                    ets:insert(T, {lease, Time + Duration})
             end,
             reply(From, ok),
             ?MODULE:loop(T, Duration);

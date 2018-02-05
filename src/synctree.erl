@@ -106,7 +106,7 @@
                height    :: pos_integer(),
                shift     :: pos_integer(),
                shift_max :: pos_integer(),
-               top_hash  :: hash(),
+               top_hash  :: hash() | undefined,
                buffer    :: [action()],
                buffered  :: non_neg_integer(),
                mod       :: module(),
@@ -354,7 +354,7 @@ orddict_find(Key, Default, L) ->
 direct_exchange(Tree=#tree{}) ->
     fun(exchange_get, {Level, Bucket}) ->
             exchange_get(Level, Bucket, Tree);
-       (start_exchange_level, {_Level, _Buckets}) -> 
+       (start_exchange_level, {_Level, _Buckets}) ->
            ok
     end.
 

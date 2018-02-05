@@ -45,7 +45,7 @@
 -record(msgstate, {awaiting = undefined :: 'undefined' | reqid(),
                    timer    = undefined :: 'undefined' | reference(),
                    required = quorum    :: required(),
-                   id       :: peer_id(),
+                   id       :: peer_id() | undefined,
                    views    = [] :: views(),
                    replies  = [] :: [{peer_id(), any()}]}).
 
