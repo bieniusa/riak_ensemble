@@ -66,7 +66,7 @@
 -type extra_check() :: undefined | fun(([peer_reply()]) -> boolean()).
 -export_type([extra_check/0]).
 
--record(collect, {replies  :: [peer_reply()], 
+-record(collect, {replies  :: [peer_reply()],
                   parent   :: maybe_from(),
                   id       :: peer_id(),
                   views    :: views(),
@@ -85,7 +85,7 @@ send_all(Msg, Id, Peers, Views) ->
 -spec send_all(msg(), peer_id(), peer_pids(), views(), required()) -> msg_state().
 send_all(_Msg, Id, _Peers=[{Id,_}], _Views, _Required) ->
     ?OUT("~p: self-sending~n", [Id]),
-    gen_fsm:send_event(self(), {quorum_met, []}),
+    gen_statem:cast(self(), {quorum_met, []}),
     #msgstate{awaiting=undefined, timer=undefined, replies=[], id=Id};
 send_all(Msg, Id, Peers, Views, Required) ->
     ?OUT("~p/~p: sending to ~p: ~p~n", [Id, self(), Peers, Msg]),
@@ -138,7 +138,7 @@ send_request({PeerId, PeerPid}, ReqId, Event) ->
             reply(From, PeerId, nack);
         _ ->
             ?OUT("~p: Sending to ~p: ~p~n", [self(), PeerId, Event]),
-            gen_fsm:send_event(PeerPid, Event)
+            gen_statem:cast(PeerPid, Event)
     end.
 
 %%%===================================================================
@@ -172,14 +172,14 @@ send_cast({_PeerId, PeerPid}, Event) ->
             ok;
         _ ->
             ?OUT("~p: Sending to ~p: ~p~n", [self(), _PeerId, Event]),
-            gen_fsm:send_event(PeerPid, Event)
+            gen_statem:cast(PeerPid, Event)
     end.
 
 %%%===================================================================
 
 -spec reply(msg_from(), peer_id(), any()) -> ok.
 reply({riak_ensemble_msg, Sender, ReqId}, Id, Reply) ->
-    gen_fsm:send_all_state_event(Sender, {reply, ReqId, Id, Reply}).
+    gen_statem:cast(Sender, {reply, ReqId, Id, Reply}).
 
 %%%===================================================================
 
@@ -349,7 +349,7 @@ add_reply(Peer, Reply, MsgState=#msgstate{timer=Timer}) ->
         true ->
             cancel_timer(Timer),
             {Valid, _Nacks} = find_valid(Replies),
-            gen_fsm:send_event(self(), {quorum_met, Valid}),
+            gen_statem:cast(self(), {quorum_met, Valid}),
             MsgState#msgstate{replies=[], awaiting=undefined, timer=undefined};
         false ->
             MsgState#msgstate{replies=Replies};
@@ -361,7 +361,7 @@ add_reply(Peer, Reply, MsgState=#msgstate{timer=Timer}) ->
 -spec quorum_timeout(msg_state()) -> msg_state().
 quorum_timeout(#msgstate{replies=Replies}) ->
     {Valid, _Nacks} = find_valid(Replies),
-    gen_fsm:send_event(self(), {timeout, Valid}),
+    gen_statem:cast(self(), {timeout, Valid}),
     #msgstate{awaiting=undefined, timer=undefined, replies=[]}.
 
 %%%===================================================================

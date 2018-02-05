@@ -43,13 +43,22 @@
 %% This isolation is provided by spawning an intermediary proxy process.
 
 -module(riak_ensemble_router).
--compile(export_all).
 -behaviour(gen_server).
 
 -include_lib("riak_ensemble_types.hrl").
 
 %% API
--export([start_link/1]).
+-export([start_link/1,
+         sync_send_event/3,
+         sync_send_event/4,
+         sync_proxy/6,
+         sync_proxy_direct/5,
+         sync_proxy_router/6,
+         cast/2, cast/3,
+         noconnect_cast/2,
+         routers/0,
+         random/1,
+         fail_cast/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -95,7 +104,7 @@ sync_proxy(From, Ref, Node, Target, Event, Timeout) ->
 -spec sync_proxy_direct(pid(), reference(), pid(), msg(), timeout()) -> ok.
 sync_proxy_direct(From, Ref, Pid, Event, Timeout) ->
     try
-        Result = gen_fsm:sync_send_event(Pid, Event, Timeout),
+        Result = gen_statem:call(Pid, Event, Timeout),
         From ! {Ref, Result},
         ok
     catch
@@ -143,7 +152,7 @@ cast(Node, Ensemble, Msg) ->
 
 noconnect_cast(Dest, Msg) ->
     case catch erlang:send(Dest, {'$gen_cast', Msg}, [noconnect]) of
-	noconnect ->
+    noconnect ->
             spawn(fun() ->
                           case Dest of
                               {_, Node} ->
@@ -235,7 +244,7 @@ ensemble_cast(Ensemble, Msg) ->
 handle_ensemble_cast({sync_send_event, From, Ref, Event, Timeout}, Pid) ->
     spawn(fun() ->
                   try
-                      Result = gen_fsm:sync_send_event(Pid, Event, Timeout),
+                      Result = gen_statem:call(Pid, Event, Timeout),
                       From ! {Ref, Result}
                   catch
                       _:_ ->

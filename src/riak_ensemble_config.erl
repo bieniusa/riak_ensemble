@@ -18,7 +18,23 @@
 %%
 %% -------------------------------------------------------------------
 -module(riak_ensemble_config).
--compile(export_all).
+-export([tick/0,
+         lease/0,
+         trust_lease/0,
+         follower_timeout/0,
+         election_timeout/0,
+         prefollow_timeout/0,
+         pending_timeout/0,
+         probe_delay/0,
+         local_get_timeout/0,
+         local_put_timeout/0,
+         alive_ticks/0,
+         peer_workers/0,
+         storage_delay/0,
+         storage_tick/0,
+         tree_validation/0,
+         synchronous_tree_updates/0,
+         notfound_read_delay/0]).
 -include_lib("riak_ensemble_types.hrl").
 
 %% @doc
