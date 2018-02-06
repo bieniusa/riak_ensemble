@@ -8,7 +8,7 @@ failed=0
 failures=""
 
 for name in $(grep -v '#' test/TESTS); do
-    ./rebar3 as test eunit --suite=$name
+    ./rebar3 eunit --suite=$name
     if [ $? -ne 0 ]; then
         failed=$((failed+1))
         failures="$failures $name"

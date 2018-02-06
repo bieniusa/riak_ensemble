@@ -30,7 +30,7 @@
 -export([join/2, join/3, update_members/3, get_leader/1, backend_pong/1]).
 -export([kget/4, kget/5, kupdate/6, kput_once/5, kover/5, kmodify/6, kdelete/4,
          ksafe_delete/5, obj_value/2, obj_value/3]).
--export([setup/2]).
+-export([setup/3]).
 -export([probe/3, election/3, prepare/3, leading/3, following/3]).
 -export([pending/3, prelead/3, prefollow/3]).
 -export([repair/3, exchange/3]).
@@ -1802,7 +1802,7 @@ init([Mod, Ensemble, Id, Args]) ->
     riak_ensemble_peer_sup:register_peer(Ensemble, Id, self(), ETS),
     {ok, setup, State}.
 
-setup({init, Args}, State0=#state{id=Id, ensemble=Ensemble, ets=ETS, mod=Mod}) ->
+setup(cast, {init, Args}, State0=#state{id=Id, ensemble=Ensemble, ets=ETS, mod=Mod}) ->
     lager:debug("~p: setup", [Id]),
     NumWorkers = ?WORKERS,
     {TreeId, Path} = mod_synctree(State0),
