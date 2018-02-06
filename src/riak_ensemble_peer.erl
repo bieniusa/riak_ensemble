@@ -21,22 +21,19 @@
 %% TODO: Before PR. Module + other edocs, general cleanup/refactor.
 
 -module(riak_ensemble_peer).
--behaviour(gen_fsm).
+-behaviour(gen_statem).
 
 -include_lib("riak_ensemble_types.hrl").
 
 %% API
--export([start_link/4, start/4]).
+-export([start_link/4, start/4, callback_mode/0]).
 -export([join/2, join/3, update_members/3, get_leader/1, backend_pong/1]).
 -export([kget/4, kget/5, kupdate/6, kput_once/5, kover/5, kmodify/6, kdelete/4,
          ksafe_delete/5, obj_value/2, obj_value/3]).
 -export([setup/2]).
--export([probe/2, election/2, prepare/2, leading/2, following/2,
-         probe/3, election/3, prepare/3, leading/3, following/3]).
--export([pending/2, prelead/2, prefollow/2,
-         pending/3, prelead/3, prefollow/3]).
--export([repair/2, exchange/2,
-         repair/3, exchange/3]).
+-export([probe/3, election/3, prepare/3, leading/3, following/3]).
+-export([pending/3, prelead/3, prefollow/3]).
+-export([repair/3, exchange/3]).
 -export([valid_obj_hash/2]).
 
 %% Support/debug API
@@ -53,12 +50,12 @@
 %% Exported internal callback functions
 -export([do_kupdate/4, do_kput_once/4, do_kmodify/4]).
 
+%% TODO This might require adaptions; has not been tested
 -compile({pulse_replace_module,
-          [{gen_fsm, pulse_gen_fsm}]}).
+          [{gen_statem, pulse_gen_statem}]}).
 
-%% gen_fsm callbacks
--export([init/1, handle_event/3, handle_sync_event/4, handle_info/3,
-         terminate/3, code_change/4]).
+%% gen_statem callbacks
+-export([init/1, terminate/3, code_change/4]).
 
 %% -define(OUT(Fmt,Args), io:format(Fmt,Args)).
 -define(OUT(Fmt,Args), ok).
@@ -105,10 +102,6 @@
 -type next_state()      :: {next_state, atom(), state()} |
                            {stop,normal,state()}.
 
--type sync_next_state() :: {reply, term(), atom(), state()} |
-                           {next_state, atom(), state()} |
-                           {stop, normal, state()}.
-
 -type fsm_from()        :: {_,_}.
 
 -type timer() :: term().
@@ -150,6 +143,8 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
+
+callback_mode() -> state_functions.
 
 -spec start_link(module(), ensemble_id(), peer_id(), [any()])
                 -> ignore | {error, _} | {ok, pid()}.
@@ -350,68 +345,64 @@ local_put(Pid, Key, Obj, Timeout) when is_pid(Pid) ->
 %% this function provide no consistency guarantees whatsoever.
 -spec debug_local_get(pid(), term()) -> std_reply().
 debug_local_get(Pid, Key) ->
-    gen_fsm:sync_send_all_state_event(Pid, {debug_local_get, Key}).
+    gen_statem:call(Pid, {debug_local_get, Key}).
 -endif.
 
 %%%===================================================================
 %%% Core Protocol
 %%%===================================================================
 
--spec probe(_, state()) -> next_state().
-probe(init, State) ->
+-spec probe(_,_, state()) -> next_state().
+probe(cast, init, State) ->
     lager:debug("~p: probe init", [State#state.id]),
     State2 = set_leader(undefined, State),
     case is_pending(State2) of
         true ->
-            pending(init, State2);
+            pending(cast, init, State2);
         false ->
             State3 = send_all(probe, State2),
             {next_state, probe, State3}
     end;
-probe({quorum_met, Replies}, State=#state{fact=Fact, abandoned=Abandoned}) ->
+probe(cast, {quorum_met, Replies}, State=#state{fact=Fact, abandoned=Abandoned}) ->
     Latest = latest_fact(Replies, Fact),
     Existing = existing_leader(Replies, Abandoned, Latest),
     State2 = State#state{fact=Latest,
                          members=compute_members(Latest#fact.views)},
     %% io:format("Latest: ~p~n", [Latest]),
-    maybe_follow(Existing, State2);
-probe({timeout, Replies}, State=#state{fact=Fact}) ->
+    maybe_follow(cast, Existing, State2);
+probe(cast, {timeout, Replies}, State=#state{fact=Fact}) ->
     Latest = latest_fact(Replies, Fact),
     State2 = State#state{fact=Latest},
     State3 = check_views(State2),
-    probe(delay, State3);
-probe(delay, State) ->
+    probe(cast, delay, State3);
+probe(cast, delay, State) ->
     State2 = set_timer(?PROBE_DELAY, probe_continue, State),
     {next_state, probe, State2};
-probe(probe_continue, State) ->
-    probe(init, State);
-probe(Msg, State) ->
-    common(Msg, State, probe).
+probe(cast, probe_continue, State) ->
+    probe(cast, init, State);
+probe(Eventtype, Msg, State) ->
+    common(Eventtype, Msg, State, probe).
 
--spec probe(_, fsm_from(), state()) -> {next_state, probe, state()}.
-probe(Msg, From, State) ->
-    common(Msg, From, State, probe).
-
-pending(init, State) ->
+pending(cast, init, State) ->
     lager:debug("~p: pending init", [State#state.id]),
     State2 = set_timer(?PENDING_TIMEOUT, pending_timeout, State),
     {next_state, pending, State2#state{tree_trust=false}};
-pending(pending_timeout, State) ->
+pending(cast, pending_timeout, State) ->
     lager:debug("~p: pending_timeout", [State#state.id]),
-    probe({timeout, []}, State);
-pending({prepare, Id, NextEpoch, From}, State=#state{fact=Fact}) ->
+    probe(cast, {timeout, []}, State);
+pending(cast, {prepare, Id, NextEpoch, From}, State=#state{fact=Fact}) ->
     Epoch = epoch(State),
     case NextEpoch > Epoch of
         true ->
             lager:debug("~p: accepting ~p from ~p (~p)", [Id, NextEpoch, Id, Epoch]),
             reply(From, Fact, State),
             State2 = cancel_timer(State),
-            prefollow({init, Id, NextEpoch}, State2);
+            prefollow(cast, {init, Id, NextEpoch}, State2);
         false ->
             lager:debug("~p: rejecting ~p from ~p (~p)", [Id, NextEpoch, Id, Epoch]),
             {next_state, pending, State}
     end;
-pending({commit, NewFact, From}, State) ->
+pending(cast, {commit, NewFact, From}, State) ->
     Epoch = epoch(State),
     case NewFact#fact.epoch >= Epoch of
         true ->
@@ -420,64 +411,55 @@ pending({commit, NewFact, From}, State) ->
                         [State#state.id, From, NewFact#fact.epoch]),
             State2 = local_commit(NewFact, State),
             State3 = cancel_timer(State2),
-            following(init, State3);
+            following(cast, init, State3);
         false ->
             lager:debug("~p: ignoring outdated commit from ~p (~p < ~p)",
                         [State#state.id, From, NewFact#fact.epoch, Epoch]),
             {next_state, pending, State}
     end;
-pending(Msg, State) ->
-    common(Msg, State, pending).
+pending(Eventtype, Msg, State) ->
+    common(Eventtype, Msg, State, pending).
 
-pending(Msg, From, State) ->
-    common(Msg, From, State, pending).
-
-maybe_follow(_, State=#state{tree_trust=false}) ->
+maybe_follow(cast, _, State=#state{tree_trust=false}) ->
     %% This peer is untrusted and must perform an exchange
-    exchange(init, State);
-maybe_follow(undefined, State) ->
-    election(init, set_leader(undefined, State));
-maybe_follow(Leader, State=#state{id=Leader}) ->
-    election(init, set_leader(undefined, State));
-maybe_follow(Leader, State) ->
+    exchange(cast, init, State);
+maybe_follow(cast, undefined, State) ->
+    election(cast, init, set_leader(undefined, State));
+maybe_follow(cast, Leader, State=#state{id=Leader}) ->
+    election(cast, init, set_leader(undefined, State));
+maybe_follow(cast, Leader, State) ->
     %% TODO: Should we use prefollow instead of following(not_ready)?
-    following(not_ready, set_leader(Leader, State)).
+    following(cast, not_ready, set_leader(Leader, State)).
 
 %%%===================================================================
 %%% tree verification/exchange
 %%%===================================================================
 
-repair(init, State=#state{tree=Tree}) ->
+repair(cast, init, State=#state{tree=Tree}) ->
     lager:debug("~p: repair", [State#state.id]),
     riak_ensemble_peer_tree:async_repair(Tree),
     {next_state, repair, State#state{tree_trust=false}};
-repair(repair_complete, State) ->
-    exchange(init, State);
-repair(Msg, State) ->
-    common(Msg, State, repair).
-
--spec repair(_, fsm_from(), state()) -> {next_state, repair, state()}.
-repair(Msg, From, State) ->
-    common(Msg, From, State, repair).
+repair(cast, repair_complete, State) ->
+    exchange(cast, init, State);
+repair(EventType, Msg, State) ->
+    common(EventType, Msg, State, repair).
 
 %%%===================================================================
 
-exchange(init, State) ->
+exchange(cast, init, State) ->
     start_exchange(State),
     {next_state, exchange, State};
-exchange(exchange_complete, State) ->
-    election(init, State#state{tree_trust=true});
-exchange(exchange_failed, State) ->
+exchange(cast, exchange_complete, State) ->
+    election(cast, init, State#state{tree_trust=true});
+exchange(cast, exchange_failed, State) ->
     %% Asynchronous exchange failed
-    probe(delay, State);
-exchange(Msg, State) ->
-    common(Msg, State, exchange).
+    probe(cast, delay, State);
 
-exchange(tree_corrupted, From, State) ->
+exchange({call, From}, tree_corrupted, State) ->
     gen_statem:reply(From, ok),
-    repair(init, State);
-exchange(Msg, From, State) ->
-    common(Msg, From, State, exchange).
+    repair(cast, init, State);
+exchange(EventType, Msg, State) ->
+    common(EventType, Msg, State, exchange).
 
 %%%===================================================================
 
@@ -490,20 +472,20 @@ start_exchange(State=#state{id=Id, ensemble=Ensemble, tree=Tree, members=Members
 
 %%%===================================================================
 
--spec election(_, state()) -> next_state().
-election(init, State) ->
+-spec election(_, _, state()) -> next_state().
+election(cast, init, State) ->
     %% io:format("~p/~p: starting election~n", [self(), State#state.id]),
     ?OUT("~p: starting election~n", [State#state.id]),
     State2 = set_timer(?ELECTION_TIMEOUT, election_timeout, State),
     {next_state, election, State2};
-election(election_timeout, State) ->
+election(cast, election_timeout, State) ->
     case mod_ping(State) of
         {ok, State2} ->
-            prepare(init, State2#state{timer=undefined});
+            prepare(cast, init, State2#state{timer=undefined});
         {failed, State2} ->
-            election(init, State2)
+            election(cast, init, State2)
     end;
-election({prepare, Id, NextEpoch, From}, State=#state{fact=Fact}) ->
+election(cast, {prepare, Id, NextEpoch, From}, State=#state{fact=Fact}) ->
     Epoch = epoch(State),
     case NextEpoch > Epoch of
         true ->
@@ -511,13 +493,13 @@ election({prepare, Id, NextEpoch, From}, State=#state{fact=Fact}) ->
                  [State#state.id, NextEpoch, Id, Epoch]),
             reply(From, Fact, State),
             State2 = cancel_timer(State),
-            prefollow({init, Id, NextEpoch}, State2);
+            prefollow(cast, {init, Id, NextEpoch}, State2);
         false ->
             ?OUT("~p: rejecting ~p from ~p (~p)~n",
                  [State#state.id, NextEpoch, Id, Epoch]),
             {next_state, election, State}
     end;
-election({commit, NewFact, From}, State) ->
+election(cast, {commit, NewFact, From}, State) ->
     %% io:format("##### ~p: commit :: ~p vs ~p~n",
     %%           [State#state.id, NewFact#fact.epoch, epoch(State)]),
     Epoch = epoch(State),
@@ -526,18 +508,14 @@ election({commit, NewFact, From}, State) ->
             reply(From, ok, State),
             State2 = local_commit(NewFact, State),
             State3 = cancel_timer(State2),
-            following(init, State3);
+            following(cast, init, State3);
         false ->
             {next_state, election, State}
     end;
-election(Msg, State) ->
-    common(Msg, State, election).
+election(EventType, Msg, State) ->
+    common(EventType, Msg, State, election).
 
--spec election(_, fsm_from(), state()) -> {next_state, election, state()}.
-election(Msg, From, State) ->
-    common(Msg, From, State, election).
-
-prefollow({init, Id, NextEpoch}, State) ->
+prefollow(cast, {init, Id, NextEpoch}, State) ->
     Prelim = {Id, NextEpoch},
     State2 = State#state{preliminary=Prelim},
     State3 = set_timer(?PREFOLLOW_TIMEOUT, prefollow_timeout, State2),
@@ -554,30 +532,27 @@ prefollow({init, Id, NextEpoch}, State) ->
 %%         false ->
 %%             {next_state, prefollow, State}
 %%     end;
-prefollow({new_epoch, Id, NextEpoch, From}, State=#state{preliminary=Prelim}) ->
+prefollow(cast, {new_epoch, Id, NextEpoch, From}, State=#state{preliminary=Prelim}) ->
     case {Id, NextEpoch} == Prelim of
         true ->
             State2 = set_leader(Id, set_epoch(NextEpoch, State)),
             State3 = cancel_timer(State2),
             reply(From, ok, State),
-            following(not_ready, State3);
+            following(cast, not_ready, State3);
         false ->
             %% {next_state, prefollow, State}
             State2 = cancel_timer(State),
-            probe(init, State2)
+            probe(cast, init, State2)
     end;
-prefollow(prefollow_timeout, State) ->
+prefollow(cast, prefollow_timeout, State) ->
     %% TODO: Should this be election instead?
-    probe(init, State);
+    probe(cast, init, State);
 %% TODO: Should we handle prepare messages?
-prefollow(Msg, State) ->
-    common(Msg, State, prefollow).
+prefollow(EventType, Msg, State) ->
+    common(EventType, Msg, State, prefollow).
 
-prefollow(Msg, From, State) ->
-    common(Msg, From, State, prefollow).
-
--spec prepare(_, state()) -> next_state().
-prepare(init, State=#state{id=Id}) ->
+-spec prepare(_, _, state()) -> next_state().
+prepare(cast, init, State=#state{id=Id}) ->
     %% TODO: Change this hack where we keep old state and reincrement
     lager:debug("~p: prepare", [State#state.id]),
     {NextEpoch, _} = increment_epoch(State),
@@ -586,73 +561,62 @@ prepare(init, State=#state{id=Id}) ->
     %%                                          get_peers(State#state.members, State)]),
     State2 = send_all({prepare, Id, NextEpoch}, State),
     {next_state, prepare, State2};
-prepare({quorum_met, Replies}, State=#state{id=Id, fact=Fact}) ->
+prepare(cast, {quorum_met, Replies}, State=#state{id=Id, fact=Fact}) ->
     %% TODO: Change this hack where we keep old state and reincrement
     Latest = latest_fact(Replies, Fact),
     {NextEpoch, _} = increment_epoch(State),
     State3 = State#state{fact=Latest,
                          preliminary={Id, NextEpoch},
                          members=compute_members(Latest#fact.views)},
-    prelead(init, State3);
-prepare({timeout, _Replies}, State) ->
+    prelead(cast, init, State3);
+prepare(cast, {timeout, _Replies}, State) ->
     %% TODO: Change this hack where we keep old state and reincrement
     %% io:format("PREPARE FAILED: ~p~n", [_Replies]),
     %% {_, State2} = increment_epoch(State),
-    probe(init, State);
-prepare(Msg, State) ->
-    common(Msg, State, prepare).
+    probe(cast, init, State);
+prepare(EventType, Msg, State) ->
+    common(EventType, Msg, State, prepare).
 
--spec prepare(_, fsm_from(), state()) -> {next_state, prepare, state()}.
-prepare(Msg, From, State) ->
-    common(Msg, From, State, prepare).
-
-prelead(init, State=#state{id=Id, preliminary=Prelim}) ->
+prelead(cast, init, State=#state{id=Id, preliminary=Prelim}) ->
     {Id, NextEpoch} = Prelim,
     State2 = send_all({new_epoch, Id, NextEpoch}, State),
     {next_state, prelead, State2};
-prelead({quorum_met, _Replies}, State=#state{id=Id, preliminary=Prelim, fact=Fact}) ->
+prelead(cast, {quorum_met, _Replies}, State=#state{id=Id, preliminary=Prelim, fact=Fact}) ->
     {Id, NextEpoch} = Prelim,
     NewFact = Fact#fact{leader=Id,
                         epoch=NextEpoch,
                         seq=0,
                         view_vsn={NextEpoch, -1}},
     State2 = State#state{fact=NewFact},
-    leading(init, State2);
-prelead({timeout, _Replies}, State) ->
-    probe(init, State);
-prelead(Msg, State) ->
-    common(Msg, State, prelead).
+    leading(cast, init, State2);
+prelead(cast, {timeout, _Replies}, State) ->
+    probe(cast, init, State);
+prelead(EventType, Msg, State) ->
+    common(EventType, Msg, State, prelead).
 
-prelead(Msg, From, State) ->
-    common(Msg, From, State, prelead).
-
--spec leading(_, state()) -> next_state().
-leading(init, State=#state{id=_Id, watchers=Watchers}) ->
+-spec leading(_, _, state()) -> next_state().
+leading(cast, init, State=#state{id=_Id, watchers=Watchers}) ->
     _ = lager:info("~p: Leading~n", [_Id]),
     start_exchange(State),
     _ = notify_leader_status(Watchers, leading, State),
-    leading(tick, State#state{alive=?ALIVE, tree_ready=false});
-leading(tick, State) ->
+    leading(cast, tick, State#state{alive=?ALIVE, tree_ready=false});
+leading(cast, tick, State) ->
     leader_tick(State);
-leading(exchange_complete, State) ->
+leading(cast, exchange_complete, State) ->
     %% io:format(user, "~p: ~p leader trusted!~n", [os:timestamp(), State#state.id]),
     State2 = State#state{tree_trust=true, tree_ready=true},
     {next_state, leading, State2};
-leading(exchange_failed, State) ->
+leading(cast, exchange_failed, State) ->
     step_down(State);
-leading({forward, From, Msg}, State) ->
-    case leading(Msg, From, State) of
+leading(cast, {forward, From, Msg}, State) ->
+    case leading({call, From}, Msg, State) of
         %% {reply, Reply, StateName, State2} ->
         %%     send_reply(From, Reply),
         %%     {next_state, StateName, State2};
         {next_state, StateName, State2} ->
             {next_state, StateName, State2}
     end;
-leading(Msg, State) ->
-    common(Msg, State, leading).
-
--spec leading(_, fsm_from(), state()) -> sync_next_state().
-leading({update_members, Changes}, From, State=#state{fact=Fact,
+leading({call, From}, {update_members, Changes}, State=#state{fact=Fact,
                                                       members=Members}) ->
     Cluster = riak_ensemble_manager:cluster(),
     Views = Fact#fact.views,
@@ -662,23 +626,23 @@ leading({update_members, Changes}, From, State=#state{fact=Fact,
             NewFact = change_pending(Views2, State),
             case try_commit(NewFact, State) of
                 {ok, State2} ->
-                    {reply, ok, leading, State2};
+                    {next_state, leading, State2, {[{reply, From, ok}]}};
                 {failed, State2} ->
                     send_reply(From, timeout),
                     step_down(State2)
             end;
         {Errors, _NewView} ->
-            {reply, {error, Errors}, leading, State}
+            {next_state, leading, State, {[{reply, From, {error, Errors}}]}}
     end;
-leading(check_quorum, From, State) ->
+leading({call, From}, check_quorum, State) ->
     case try_commit(State#state.fact, State) of
         {ok, State2} ->
-            {reply, ok, leading, State2};
+            {next_state, leading, State2, {[{reply, From, ok}]}};
         {failed, State2} ->
             send_reply(From, timeout),
             step_down(State2)
     end;
-leading(ping_quorum, From, State=#state{fact=Fact, id=Id, members=Members,
+leading({call, From}, ping_quorum, State=#state{fact=Fact, id=Id, members=Members,
                                         tree_ready=TreeReady}) ->
     NewFact = increment_sequence(Fact),
     State2 = local_commit(NewFact, State),
@@ -701,7 +665,7 @@ leading(ping_quorum, From, State=#state{fact=Fact, id=Id, members=Members,
                        gen_statem:reply(From, {Id, TreeReady, Result})
                end),
     {next_state, leading, State3};
-leading(stable_views, _From, State=#state{fact=Fact}) ->
+leading({call, From}, stable_views, State=#state{fact=Fact}) ->
     #fact{pending=Pending, views=Views} = Fact,
     Reply = case {Pending, Views} of
                 {undefined, [_]} ->
@@ -711,14 +675,16 @@ leading(stable_views, _From, State=#state{fact=Fact}) ->
                 _ ->
                     {ok, false}
             end,
-    {reply, Reply, leading, State};
-leading(Msg, From, State) ->
+    {next_state, leading, State, {[{reply, From, Reply}]}};
+leading({call, From}, Msg, State) ->
     case leading_kv(Msg, From, State) of
         false ->
-            common(Msg, From, State, leading);
+            common({call, From}, Msg, State, leading);
         Return ->
             Return
-    end.
+    end;
+leading(EventType, Msg, State) ->
+    common(EventType, Msg, State, leading).
 
 -spec change_pending(views(), state()) -> fact().
 change_pending(Views, #state{fact=Fact}) ->
@@ -791,22 +757,22 @@ try_commit(NewFact0, State) ->
 reset_follower_timer(State) ->
     set_timer(?FOLLOWER_TIMEOUT, follower_timeout, State).
 
--spec following(_, state()) -> next_state().
-following(not_ready, State) ->
-    following(init, State#state{ready=false});
-following(init, State) ->
+-spec following(_, _, state()) -> next_state().
+following(cast, not_ready, State) ->
+    following(cast, init, State#state{ready=false});
+following(cast, init, State) ->
     lager:debug("~p: Following: ~p", [State#state.id, leader(State)]),
     start_exchange(State),
     State2 = reset_follower_timer(State),
     {next_state, following, State2};
-following(exchange_complete, State) ->
+following(cast, exchange_complete, State) ->
     %% io:format(user, "~p: ~p follower trusted!~n", [os:timestamp(), State#state.id]),
     State2 = State#state{tree_trust=true},
     {next_state, following, State2};
-following(exchange_failed, State) ->
+following(cast, exchange_failed, State) ->
     lager:debug("~p: exchange failed", [State#state.id]),
-    probe(init, State);
-following({commit, Fact, From}, State) ->
+    probe(cast, init, State);
+following(cast, {commit, Fact, From}, State) ->
     State3 = case Fact#fact.epoch >= epoch(State) of
                  true ->
                      State2 = local_commit(Fact, State),
@@ -816,7 +782,7 @@ following({commit, Fact, From}, State) ->
                      State
              end,
     {next_state, following, State3};
-%% following({prepare, Id, NextEpoch, From}=Msg, State=#state{fact=Fact}) ->
+%% following(cast, {prepare, Id, NextEpoch, From}=Msg, State=#state{fact=Fact}) ->
 %%     Epoch = epoch(State),
 %%     case (Id =:= leader(State)) and (NextEpoch > Epoch) of
 %%         true ->
@@ -831,10 +797,10 @@ following({commit, Fact, From}, State) ->
 %%             nack(Msg, State),
 %%             {next_state, following, State}
 %%     end;
-following(follower_timeout, State) ->
+following(cast, follower_timeout, State) ->
     lager:debug("~p: follower_timeout from ~p", [State#state.id, leader(State)]),
     abandon(State#state{timer=undefined});
-following({check_epoch, Leader, Epoch, From}, State) ->
+following(cast, {check_epoch, Leader, Epoch, From}, State) ->
     case check_epoch(Leader, Epoch, State) of
         true ->
             reply(From, ok, State);
@@ -842,27 +808,27 @@ following({check_epoch, Leader, Epoch, From}, State) ->
             reply(From, nack, State)
     end,
     {next_state, following, State};
-following(Msg, State) ->
+following(cast, Msg, State) ->
     case following_kv(Msg, State) of
         false ->
-            common(Msg, State, following);
+            common(cast, Msg, State, following);
         Return ->
             Return
-    end.
-
--spec following(_, fsm_from(), state()) -> {next_state, following, state()}.
-following({join, _Id}=Msg, From, State) ->
-    forward(Msg, From, State);
-following(Msg, From, State) ->
+    end;
+following({call, From},  {join, _Id}=Msg, State) ->
+    forward({call, From}, Msg, State);
+following({call, From},  Msg, State) ->
     case following_kv(Msg, From, State) of
         false ->
-            common(Msg, From, State, following);
+            common({call, From}, Msg, State, following);
         Return ->
             Return
-    end.
+    end;
+following(EventType, Msg, State) ->
+    common(EventType, Msg, State, following).
 
--spec forward(_, fsm_from(), state()) -> {next_state, following, state()}.
-forward(Msg, From, State) ->
+-spec forward(_, _, state()) -> {next_state, following, state()}.
+forward({call, From}, Msg, State) ->
     catch gen_statem:cast(peer(leader(State), State), {forward, From, Msg}),
     {next_state, following, State}.
 
@@ -920,11 +886,11 @@ step_down(Next, State=#state{lease=Lease, watchers=Watchers}) ->
     State3 = set_leader(undefined, State2),
     case Next of
         probe ->
-            probe(init, State3);
+            probe(cast, init, State3);
         prepare ->
-            prepare(init, State3);
+            prepare(cast, init, State3);
         repair ->
-            repair(init, State3);
+            repair(cast, init, State3);
         stop ->
             {stop, normal, State3}
     end.
@@ -932,7 +898,7 @@ step_down(Next, State=#state{lease=Lease, watchers=Watchers}) ->
 abandon(State) ->
     Abandoned = {epoch(State), seq(State)},
     State2 = set_leader(undefined, State#state{abandoned=Abandoned}),
-    probe(init, State2).
+    probe(cast, init, State2).
 
 -spec is_pending(state()) -> boolean().
 is_pending(#state{ensemble=Ensemble, id=Id, members=Members}) ->
@@ -994,11 +960,11 @@ views(State) ->
 
 %%%===================================================================
 
--spec common(_, state(), StateName) -> {next_state, StateName, state()}.
-common({probe, From}, State=#state{fact=Fact}, StateName) ->
+-spec common(_, _, state(), StateName) -> {next_state, StateName, state()}.
+common(cast, {probe, From}, State=#state{fact=Fact}, StateName) ->
     reply(From, Fact, State),
     {next_state, StateName, State};
-common({exchange, From}, State, StateName) ->
+common(cast, {exchange, From}, State, StateName) ->
     case State#state.tree_trust of
         true ->
             reply(From, ok, State);
@@ -1006,59 +972,59 @@ common({exchange, From}, State, StateName) ->
             reply(From, nack, State)
     end,
     {next_state, StateName, State};
-common({all_exchange, From}, State, StateName) ->
+common(cast, {all_exchange, From}, State, StateName) ->
     reply(From, ok, State),
     {next_state, StateName, State};
-common(tick, State, StateName) ->
+common(cast, tick, State, StateName) ->
     %% TODO: Fix it so we don't have errant tick messages
     {next_state, StateName, State};
-common({forward, _From, _Msg}, State, StateName) ->
+common(cast, {forward, _From, _Msg}, State, StateName) ->
     {next_state, StateName, State};
-common(backend_pong, State, StateName) ->
+common(cast, backend_pong, State, StateName) ->
     State2 = State#state{alive=?ALIVE},
     {next_state, StateName, State2};
-common({update_hash, _, _, MaybeFrom}, State, StateName) ->
+common(cast, {update_hash, _, _, MaybeFrom}, State, StateName) ->
     maybe_reply(MaybeFrom, nack, State),
     {next_state, StateName, State};
-common(Msg, State, StateName) ->
+common(cast, Msg, State, StateName) ->
     nack(Msg, State),
-    {next_state, StateName, State}.
-
--spec common(_, fsm_from(), state(), StateName) -> {next_state, StateName, state()}.
-common({force_state, {Epoch, Seq}}, From, State, StateName) ->
+    {next_state, StateName, State};
+common({call, From}, {force_state, {Epoch, Seq}}, State, StateName) ->
     State2 = set_epoch(Epoch, set_seq(Seq, State)),
     gen_statem:reply(From, ok),
     {next_state, StateName, State2};
-common(tree_pid, From, State, StateName) ->
+common({call, From}, tree_pid, State, StateName) ->
     gen_statem:reply(From, State#state.tree),
     {next_state, StateName, State};
-common(tree_corrupted, From, State, StateName) ->
+common({call, From}, tree_corrupted, State, StateName) ->
     gen_statem:reply(From, ok),
     lager:debug("~p: tree_corrupted in state ~p", [State#state.id, StateName]),
-    repair(init, State);
-common(_Msg, From, State, StateName) ->
+    repair(cast, init, State);
+common({call, From}, _Msg, State, StateName) ->
     send_reply(From, nack),
-    {next_state, StateName, State}.
+    {next_state, StateName, State};
+common(EventType, Msg, State, StateName) ->
+    handle_common_event(EventType, Msg, StateName, State).
 
 -spec nack(_, state()) -> ok.
-nack({probe, From}, State) ->
+nack( {probe, From}, State) ->
     ?OUT("~p: sending nack to ~p~n", [State#state.id, From]),
     %% io:format("~p: sending nack to ~p~n", [State#state.id, From]),
     reply(From, nack, State);
-nack({prepare, _, _, From}, State) ->
+nack( {prepare, _, _, From}, State) ->
     ?OUT("~p: sending nack to ~p~n", [State#state.id, From]),
     reply(From, nack, State);
-nack({commit, _, From}, State) ->
+nack( {commit, _, From}, State) ->
     ?OUT("~p: sending nack to ~p~n", [State#state.id, From]),
     reply(From, nack, State);
-nack({get, _, _, _, From}, State) ->
+nack( {get, _, _, _, From}, State) ->
     ?OUT("~p: sending nack to ~p~n", [State#state.id, From]),
     %% io:format("~p: sending nack to ~p~n", [State#state.id, From]),
     reply(From, nack, State);
-nack({put, _, _, _, _, From}, State) ->
+nack( {put, _, _, _, _, From}, State) ->
     ?OUT("~p: sending nack to ~p~n", [State#state.id, From]),
     reply(From, nack, State);
-nack({new_epoch, _, _, From}, State) ->
+nack( {new_epoch, _, _, From}, State) ->
     reply(From, nack, State);
 nack(_Msg, _State) ->
     ?OUT("~p: unable to nack unknown message: ~p~n", [_State#state.id, _Msg]),
@@ -1336,7 +1302,7 @@ following_kv({update_hash, Key, ObjHash, MaybeFrom}, State) ->
     case update_hash(Key, ObjHash, State) of
         {corrupted, State2} ->
             maybe_reply(MaybeFrom, nack, State),
-            repair(init, State2);
+            repair(cast, init, State2);
         {ok, State2} ->
             maybe_reply(MaybeFrom, ok, State),
             {next_state, following, State2}
@@ -1346,11 +1312,11 @@ following_kv(_, _State) ->
 
 -spec following_kv(_,_,_) -> false | {next_state,following,state()}.
 following_kv({get, _Key, _Opts}=Msg, From, State) ->
-    forward(Msg, From, State);
+    forward({call, From}, Msg, State);
 following_kv({put, _Key, _Fun, _Args}=Msg, From, State) ->
-    forward(Msg, From, State);
+    forward({call, From}, Msg, State);
 following_kv({overwrite, _Key, _Val}=Msg, From, State) ->
-    forward(Msg, From, State);
+    forward({call, From}, Msg, State);
 following_kv(_, _From, _State) ->
     false.
 
@@ -1811,7 +1777,7 @@ get_value(Obj, Default, State) ->
     end.
 
 %%%===================================================================
-%%% gen_fsm callbacks
+%%% gen_statem callbacks
 %%%===================================================================
 
 -spec init([any(),...]) -> {ok, setup, state()}.
@@ -1854,14 +1820,17 @@ setup({init, Args}, State0=#state{id=Id, ensemble=Ensemble, ets=ETS, mod=Mod}) -
     State2 = check_views(State),
     %% TODO: Why are we local commiting on startup?
     State3 = local_commit(State2#state.fact, State2),
-    probe(init, State3).
+    probe(cast, init, State3).
 
--spec handle_event(_, atom(), state()) -> {next_state, atom(), state()}.
-handle_event({watch_leader_status, Pid}, StateName, State) when node(Pid) =/= node() ->
+-spec handle_common_event(_EventType, _Event, atom(), state()) -> {next_state, atom(), state()} |
+                                                {reply, ok, atom(), state()} |
+                                                {reply, ensemble_id(), atom(), state()} |
+                                                {stop, normal, ok, state()}.
+handle_common_event(cast, {watch_leader_status, Pid}, StateName, State) when node(Pid) =/= node() ->
     lager:debug("Remote pid ~p not allowed to watch_leader_status on ensemble peer ~p",
                 [Pid, State#state.id]),
     {next_state, StateName, State};
-handle_event({watch_leader_status, Pid}, StateName, State = #state{watchers = Watchers}) ->
+handle_common_event(cast, {watch_leader_status, Pid}, StateName, State = #state{watchers = Watchers}) ->
     case is_watcher(Pid, Watchers) of
         true ->
             lager:debug("Got watch_leader_status for ~p, but pid already in watchers list"),
@@ -1871,7 +1840,7 @@ handle_event({watch_leader_status, Pid}, StateName, State = #state{watchers = Wa
             MRef = erlang:monitor(process, Pid),
             {next_state, StateName, State#state{watchers = [{Pid, MRef} | Watchers]}}
     end;
-handle_event({stop_watching, Pid}, StateName, State = #state{watchers = Watchers}) ->
+handle_common_event(cast, {stop_watching, Pid}, StateName, State = #state{watchers = Watchers}) ->
     case remove_watcher(Pid, Watchers) of
         not_found ->
             lager:debug("Tried to stop watching for pid ~p, but did not find it in watcher list"),
@@ -1880,42 +1849,38 @@ handle_event({stop_watching, Pid}, StateName, State = #state{watchers = Watchers
             erlang:demonitor(MRef, [flush]),
             {next_state, StateName, State#state{watchers = NewWatcherList}}
     end;
-handle_event({reply, ReqId, Peer, Reply}, StateName, State) ->
+handle_common_event(cast, {reply, ReqId, Peer, Reply}, StateName, State) ->
     State2 = handle_reply(ReqId, Peer, Reply, State),
     {next_state, StateName, State2};
-handle_event({peer_pid, PeerId, Pid}, StateName, State) ->
+handle_common_event(cast, {peer_pid, PeerId, Pid}, StateName, State) ->
     {_Ensemble, Id} = PeerId,
     Peers = orddict:store(Id, Pid, State#state.peers),
     {next_state, StateName, State#state{peers=Peers}};
-handle_event(_Event, StateName, State) ->
-    {next_state, StateName, State}.
+handle_common_event(cast, _Event, StateName, State) ->
+    {next_state, StateName, State};
 
--spec handle_sync_event(_, _, atom(), state()) -> {reply, ok, atom(), state()} |
-                                                  {reply, ensemble_id(), atom(), state()} |
-                                                  {stop, normal, ok, state()}.
-handle_sync_event(get_leader, _From, StateName, State) ->
-    {reply, leader(State), StateName, State};
-handle_sync_event(get_info, _From, StateName, State=#state{tree_trust=Trust}) ->
+handle_common_event({call, From}, get_leader, StateName, State) ->
+    {next_state, StateName, State, {[reply, From, leader(State)]}};
+handle_common_event({call, From}, get_info, StateName, State=#state{tree_trust=Trust}) ->
     Epoch = epoch(State),
     Info = {StateName, Trust, Epoch},
-    {reply, Info, StateName, State};
-handle_sync_event(tree_info, _From, StateName, State=#state{tree_trust=Trust,
+    {next_state, StateName, State, {[reply, From, Info]}};
+handle_common_event({call, From}, tree_info, StateName, State=#state{tree_trust=Trust,
                                                             tree_ready=Ready,
                                                             tree=Pid}) ->
     TopHash = riak_ensemble_peer_tree:top_hash(Pid),
     Info = {Trust, Ready, TopHash},
-    {reply, Info, StateName, State};
-handle_sync_event({debug_local_get, Key}, From, StateName, State) ->
+    {next_state, StateName, State, {[reply, From, Info]}};
+handle_common_event({call, From}, {debug_local_get, Key}, StateName, State) ->
     State2 = do_local_get(From, Key, State),
     {next_state, StateName, State2};
-handle_sync_event(get_watchers, _From, StateName, State) ->
-    {reply, State#state.watchers, StateName, State};
-handle_sync_event(_Event, _From, StateName, State) ->
-    Reply = ok,
-    {reply, Reply, StateName, State}.
+handle_common_event({call, From}, get_watchers, StateName, State) ->
+    {next_state, StateName, State, {[reply, From, State#state.watchers]}};
+handle_common_event({call, From}, _Event, StateName, State) ->
+    {next_state, StateName, State, {[reply, From, ok]}};
 
 %% -spec handle_info(_, atom(), state()) -> next_state().
-handle_info({'DOWN', MRef, _, Pid, Reason}, StateName, State) ->
+handle_common_event(info, {'DOWN', MRef, _, Pid, Reason}, StateName, State) ->
     Watchers = State#state.watchers,
     case remove_watcher(Pid, Watchers) of
         {MRef, NewWatcherList} ->
@@ -1925,10 +1890,10 @@ handle_info({'DOWN', MRef, _, Pid, Reason}, StateName, State) ->
             %% to the callback module in case that's where it's supposed to go
             module_handle_down(MRef, Pid, Reason, StateName, State)
     end;
-handle_info(quorum_timeout, StateName, State) ->
+handle_common_event(info, quorum_timeout, StateName, State) ->
     State2 = quorum_timeout(State),
     {next_state, StateName, State2};
-handle_info(_Info, StateName, State) ->
+handle_common_event(info, _Info, StateName, State) ->
     {next_state, StateName, State}.
 
 module_handle_down(MRef, Pid, Reason, StateName, State) ->

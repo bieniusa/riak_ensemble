@@ -38,7 +38,7 @@
 %% additional concurrency and not have a single router bottleneck traffic.
 %%
 %% A secondary purpose of this module is to provide an isolated version
-%% of `gen_fsm:send_sync_event' that converts timeouts into error tuples
+%% of `gen_statem:call' that converts timeouts into error tuples
 %% rather than exit conditions, as well as discarding late/delayed messages.
 %% This isolation is provided by spawning an intermediary proxy process.
 
