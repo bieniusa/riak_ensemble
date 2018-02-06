@@ -1,6 +1,6 @@
 -module(ens_test).
 -include_lib("eunit/include/eunit.hrl").
--export([run/1]).
+-export([run/1, run/2]).
 
 -export([start/0, start/1, kput/2, kget/1, kget/2, read_until/1, wait_until/1, wait_until/3]).
 
