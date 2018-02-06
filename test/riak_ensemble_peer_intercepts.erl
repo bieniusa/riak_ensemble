@@ -1,6 +1,6 @@
 -module(riak_ensemble_peer_intercepts).
--compile(export_all).
 -include("riak_ensemble_types.hrl").
+-export([check_epoch/3, check_epoch_false/3]).
 
 -define(M, riak_ensemble_peer_orig).
 

@@ -1,7 +1,7 @@
 %% Various pure tests
 -module(ensemble_tests_pure).
--compile(export_all).
 -include_lib("eunit/include/eunit.hrl").
+-export([test_monotonic_time/0]).
 
 -define(TEST(X), {timeout, 60, {test, ?MODULE, X}}).
 
@@ -14,6 +14,6 @@ test_monotonic_time() ->
     timer:sleep(1000),
     {ok, N2} = riak_ensemble_clock:monotonic_time(),
     {ok, M2} = riak_ensemble_clock:monotonic_time_ms(),
-    ?assert((N2 - N1) >= 1000000000), 
-    ?assert((M2 - M1) >= 1000), 
+    ?assert((N2 - N1) >= 1000000000),
+    ?assert((M2 - M1) >= 1000),
     ok.

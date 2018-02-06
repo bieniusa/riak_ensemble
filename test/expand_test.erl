@@ -1,5 +1,4 @@
 -module(expand_test).
--compile(export_all).
 -include_lib("eunit/include/eunit.hrl").
 
 run_test_() ->
@@ -20,4 +19,3 @@ scenario() ->
     ens_test:wait_stable(root),
     {ok, _} = ens_test:kget(<<"test">>),
     ok.
-

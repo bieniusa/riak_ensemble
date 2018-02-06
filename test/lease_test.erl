@@ -1,5 +1,4 @@
 -module(lease_test).
--compile(export_all).
 -include_lib("eunit/include/eunit.hrl").
 
 run_test_() ->
@@ -10,7 +9,7 @@ scenario() ->
     {ok, _} = ens_test:kput(<<"test">>, <<"test">>),
 
     %% Test with lease trusted
-    {ok, _} = ens_test:kget(<<"test">>), 
+    {ok, _} = ens_test:kget(<<"test">>),
 
     %% Test with lease not trusted
     ok = application:set_env(riak_ensemble, trust_lease, false),
@@ -38,7 +37,7 @@ scenario() ->
 
     %% Remove intercept and test that all is well
     rt_intercept:add(node(), {riak_ensemble_peer, [{{check_epoch,3}, check_epoch}]}),
-    ens_test:wait_stable(root), 
+    ens_test:wait_stable(root),
     {ok, _} = ens_test:kget(<<"test">>),
     {ok, _} = ens_test:kget(<<"test">>),
 

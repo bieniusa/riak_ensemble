@@ -1,7 +1,7 @@
 -module(riak_ensemble_basic_backend_intercepts).
--compile(export_all).
 -include("riak_ensemble_types.hrl").
-
+-export([drop_put/4,
+         synctree_path_shared/2]).
 -define(M, riak_ensemble_basic_backend_orig).
 
 %% copied from riak_ensemble_basic_backend.erl

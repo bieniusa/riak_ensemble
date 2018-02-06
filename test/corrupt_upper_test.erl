@@ -1,5 +1,5 @@
 -module(corrupt_upper_test).
--compile(export_all).
+-include_lib("eunit/include/eunit.hrl").
 
 run_test_() ->
     ens_test:run(fun scenario/0).
@@ -16,4 +16,3 @@ scenario() ->
 %% detect corruption / not-trusted
 %% wait until all peers (esp. root) are trusted
 %% check some keys?
-

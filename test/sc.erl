@@ -1,6 +1,4 @@
 -module(sc).
--compile(export_all).
-
 -ifdef(EQC).
 
 -include_lib("eqc/include/eqc.hrl").
@@ -706,7 +704,7 @@ go2() ->
     eqc:check(prop_sc(Nodes, Concurrency)).
 
 tt() ->
-    L = 
+    L =
 [{timeout,[notfound,
                {riakc_obj,<<"c~test">>,
                           <<0,0,0,0,0,0,0,3>>,
@@ -817,9 +815,9 @@ tt() ->
 %% TODO: Need to model timeout'd modify/puts as maybes
 get_success(L) ->
     get_success(lists:reverse(L), [], []).
-get_success([], Success, Maybe) ->    
+get_success([], Success, Maybe) ->
     {lists:usort(Success), lists:usort(Maybe)};
-get_success([X|Rest], Success, Maybe) -> 
+get_success([X|Rest], Success, Maybe) ->
     case X of
         {Val, {ok, _}} ->
             get_success(Rest, [Val|Success], Maybe);
@@ -1001,7 +999,7 @@ connect_clients(_Nodes, NumWorkers) ->
     Clients = [begin
                    %% Node = element((N rem Len) + 1, NT),
                    %% {ok, Client} = riak:client_connect(Node),
-                   {ok, Pid} = riakc_pb_socket:start_link("127.0.0.1", 10017, 
+                   {ok, Pid} = riakc_pb_socket:start_link("127.0.0.1", 10017,
                                                           [{auto_reconnect, true},
                                                            {queue_if_disconnected, true}]),
                    Pid

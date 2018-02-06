@@ -1,5 +1,4 @@
 -module(synctree_remote).
--compile(export_all).
 -include_lib("eunit/include/eunit.hrl").
 
 run_test_() ->

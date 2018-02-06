@@ -1,5 +1,9 @@
 -module(synctree_intercepts).
--compile(export_all).
+-export([corrupt_upper/2,
+         corrupt_segment/2,
+         corrupt_segment_all/2,
+         corrupt_segment_follower/2,
+         m_store_normal/2]).
 -define(M, synctree_orig).
 
 %% copied from synctree.erl

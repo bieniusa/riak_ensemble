@@ -1,6 +1,8 @@
 -module(ens_test).
--compile(export_all).
 -include_lib("eunit/include/eunit.hrl").
+-export([run/1]).
+
+-export([start/0, start/1, kput/2, kget/1, kget/2, read_until/1, wait_until/1, wait_until/3]).
 
 run(Test) ->
     %% run(Test, 5*60).
@@ -25,7 +27,7 @@ start() ->
     Node = node(),
     riak_ensemble_manager:enable(),
     [{root, Node}] = riak_ensemble_manager:get_members(root),
-    ens_test:wait_stable(root), 
+    wait_stable(root),
     ok.
 
 start(N) ->
@@ -37,11 +39,11 @@ expand(N) ->
     Changes = [{add, Member} || Member <- NewMembers],
     Pid = riak_ensemble_manager:get_leader_pid(root),
     riak_ensemble_peer:update_members(Pid, Changes, 5000),
-    ens_test:wait_stable(root),
+    wait_stable(root),
 
     Members = [{root, node()} | NewMembers],
-    ens_test:wait_members(root, Members),
-    ens_test:wait_stable(root),
+    wait_members(root, Members),
+    wait_stable(root),
     ok.
 
 wait_stable(Ensemble) ->
@@ -85,7 +87,7 @@ kget(Key, Opts) ->
     riak_ensemble_client:kget(node(), root, Key, 5000, Opts).
 
 read_until(Key) ->
-    case ens_test:kget(Key) of
+    case kget(Key) of
         {ok, Obj} ->
             Value = riak_ensemble_basic_backend:obj_value(Obj),
             ?assert(Value =/= notfound),

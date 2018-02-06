@@ -1,5 +1,5 @@
 -module(corrupt_segment_test).
--compile(export_all).
+-include_lib("eunit/include/eunit.hrl").
 
 run_test_() ->
     ens_test:run(fun scenario/0).
@@ -24,4 +24,3 @@ scenario() ->
 %% wait for all to be trusted again / corruption heals
 %% wait for successful read
 %% fail if we ever get notfound / etc
-

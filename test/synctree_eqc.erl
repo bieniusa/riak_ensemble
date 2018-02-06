@@ -1,7 +1,6 @@
 %% Port of EQC test from riak_core/hashtree.erl
 
 -module(synctree_eqc).
--compile(export_all).
 
 -ifdef(EQC).
 -include_lib("eqc/include/eqc.hrl").

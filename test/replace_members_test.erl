@@ -1,5 +1,4 @@
 -module(replace_members_test).
--compile(export_all).
 -include_lib("eunit/include/eunit.hrl").
 
 -define(TIMEOUT, 60). %% seconds

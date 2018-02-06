@@ -1,6 +1,14 @@
 %% Simple synctree tests that are stateless.
 -module(synctree_pure).
--compile(export_all).
+-export([test_basic_orddict/0,
+         test_basic_ets/0,
+         test_basic_leveldb/0,
+         test_corrupt_orddict/0,
+         test_corrupt_ets/0,
+         test_corrupt_leveldb/0,
+         test_exchange_orddict/0,
+         test_exchange_ets/0,
+         test_exchange_leveldb/0]).
 -include_lib("eunit/include/eunit.hrl").
 
 -define(TEST(X), {timeout, 60, {test, ?MODULE, X}}).
@@ -67,8 +75,8 @@ test_exchange(Mod) ->
     ?assertEqual(Expect, lists:sort(Result)),
     ok.
 
-build(N) ->
-    build(N, synctree_ets).
+% build(N) ->
+%     build(N, synctree_ets).
 
 build(N, Mod) ->
     do_build(N, synctree:new(undefined, default, default, Mod)).
@@ -80,5 +88,5 @@ do_build(N, T) ->
     do_build(N-1, T2).
 
 expected_diff(Num, Diff) ->
-    [{N, {<<(N*10):64/integer>>, '$none'}} 
+    [{N, {<<(N*10):64/integer>>, '$none'}}
      || N <- lists:seq(Num - Diff + 1, Num)].
